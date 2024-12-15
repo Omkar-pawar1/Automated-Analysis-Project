@@ -42,11 +42,6 @@ def analyze_csv(filename):
             print("Warning: Duplicate column names detected. Renaming duplicates.")
             df.columns = pd.io.parsers.ParserBase({'names': df.columns})._maybe_dedup_names(df.columns)
 
-        for col in df.columns:
-            try:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-            except:
-                continue
 
         summary = {
             "shape": df.shape,
@@ -71,20 +66,7 @@ def query_llm_for_charts(summary):
             "Content-Type": "application/json",
             "Authorization": f"Bearer {AIPROXY_TOKEN}"
         }
-        # prompt = (
-        #     "You are a data visualization expert. Based on the following dataset summary, "
-        #     "recommend only the top 2 suitable chart types for analyzing this dataset. "
-        #     "For each chart, provide ONLY the Python code needed to generate it using matplotlib or seaborn, "
-        #     "and nothing else.\n\n"
-        #     f"Dataset Summary:\n{summary}\n\n"
-        #     "Your response should be strictly in this format:\n"
-        #     "{\n"
-        #     "  \"charts\": [\n"
-        #     "    {\"type\": \"Chart Type\", \"code\": \"Python code for chart\"},\n"
-        #     "    {\"type\": \"Chart Type\", \"code\": \"Python code for chart\"}\n"
-        #     "  ]\n"
-        #     "}"
-        # )
+        
         prompt = (
             "You are a data visualization expert. Based on the following dataset summary, "
             "recommend only the top 2 suitable chart types for analyzing this dataset. "
@@ -113,21 +95,27 @@ def query_llm_for_charts(summary):
         print(f"Error querying LLM for chart recommendations: {e}\n{traceback.format_exc()}")
         sys.exit(1)
 
-def generate_charts_from_llm(recommendations, df):
+
+def generate_charts_from_llm(recommendations, df, output_dir):
     charts = []
     try:
-        # Parse LLM output
         import json
         chart_data = json.loads(recommendations)
         for chart in chart_data['charts']:
             chart_type = chart['type']
             chart_code = chart['code']
             
-            # Validate and execute the code
-            local_vars = {'df': df, 'charts': charts}
-            print(f"Generating {chart_type}...")
-            exec(chart_code, globals(), local_vars)
-            charts.append(f"{chart_type}.png")  # Save chart name or update as needed
+            # Define the chart file path
+            chart_filename = os.path.join(output_dir, f"{chart_type}.png")
+            chart_code_with_save = chart_code.replace(
+                "plt.savefig(", f"plt.savefig('{chart_filename}'"
+            )
+            
+            # Validate and execute the updated code
+            local_vars = {'df': df}
+            print(f"Generating {chart_type} and saving to {chart_filename}...")
+            exec(chart_code_with_save, globals(), local_vars)
+            charts.append(chart_filename)  # Save the full path of the chart
             
     except json.JSONDecodeError as je:
         print(f"Error parsing LLM output: {je}\n{traceback.format_exc()}")
@@ -136,6 +124,8 @@ def generate_charts_from_llm(recommendations, df):
     except Exception as e:
         print(f"Error executing chart code: {e}\n{traceback.format_exc()}")
     return charts
+
+
 
 
 def query_llm_for_story(summary, charts):
@@ -169,7 +159,8 @@ def query_llm_for_story(summary, charts):
         print(f"Error querying LLM for storytelling: {e}\n{traceback.format_exc()}")
         sys.exit(1)
 
-def create_story_readme(filename,story, charts):
+
+def create_story_readme(filename, story, charts):
     try:
         f_name = filename.rsplit(".csv", 1)[0]
         
@@ -181,32 +172,37 @@ def create_story_readme(filename,story, charts):
         os.makedirs(dir_path, exist_ok=True)
         
         with open(readme_file, "w") as f:
-            # f.write("# Data Summery\n\n")
-            # f.write(summary)
             f.write("# Data Analysis Story\n\n")
             f.write(story)
             f.write("\n\n## Visualizations\n")
             for chart in charts:
-                f.write(f"![Chart]({chart})\n")
+                # Convert to relative path for the README file
+                relative_path = os.path.basename(chart)
+                f.write(f"![Chart]({relative_path})\n")
     except Exception as e:
         print(f"Error writing storytelling README.md: {e}\n{traceback.format_exc()}")
         sys.exit(1)
 
+
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Usage: python3 autolysis.py <dataset.csv>")
+        print("Usage: uv run autolysis.py <dataset.csv>")
         sys.exit(1)
 
     input_file = sys.argv[1]
     df, summary = analyze_csv(input_file)
+    
+    # Ensure output directory exists
+    output_dir = input_file.rsplit(".csv", 1)[0]
+    os.makedirs(output_dir, exist_ok=True)
 
     # Step 1: Generate Chart Recommendations
     chart_recommendations = query_llm_for_charts(summary)
-    charts = generate_charts_from_llm(chart_recommendations, df)
+    charts = generate_charts_from_llm(chart_recommendations, df, output_dir)
 
     # Step 2: Generate Storytelling Narrative
     story = query_llm_for_story(summary, charts)
 
     # Step 3: Save Narrative and Charts in README.md
-    create_story_readme(input_file,story, charts)
+    create_story_readme(input_file, story, charts)
     print("Analysis complete. Storytelling narrative written to README.md and PNG charts saved.")
